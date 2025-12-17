@@ -1,0 +1,312 @@
+import pandas as pd
+import numpy as np
+import json
+import math
+import random
+from typing import List, Dict, Any, Tuple
+
+# 警告：以下程式碼塊假設在 Google Colab 或 Jupyter 環境中運行時，
+# 檔案上傳 (files.upload) 和下載 (files.download) 函數是可用的。
+# 在標準 Python 環境中，您需要註釋或替換這些函數。
+try:
+    from google.colab import files
+    # 模擬 Colab 環境的安裝
+    # !pip -q install pandas numpy scikit-learn
+    print("Google Colab environment detected. Using mock file operations.")
+except ImportError:
+    # 標準 Python 環境下，定義虛擬函數避免錯誤
+    class MockFiles:
+        def upload(self):
+            print("--- MOCK: files.upload() - 請在實際環境中上傳 CSV 檔案 ---")
+            return {}
+        def download(self, filename):
+            print(f"--- MOCK: files.download('{filename}') - 檔案已生成，但未實際下載 ---")
+    files = MockFiles()
+    print("Standard Python environment detected. Using mock file operations.")
+
+# --- 1. 核心輔助函式定義 ---
+
+def normalize_ability_name(name: str) -> str:
+    """統一能力指標名稱格式：去除前後空白、統一全形與半形符號。"""
+    if not isinstance(name, str):
+        return ""
+    return (
+        name.strip()
+        .replace("　", " ")
+        .replace("／", "/")
+        .replace("  ", " ")
+    )
+
+def describe_abilities(abilities: List[str], desc_map: Dict[str, str]) -> str:
+    """將能力指標轉為具中文說明的可讀文字。"""
+    return "、".join(
+        f"{a}（{desc_map.get(a, '能力描述待補')}）"
+        for a in abilities
+    )
+
+def build_rule_base(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """將關聯規則 DataFrame 轉為知識規則庫結構。"""
+    rule_base = []
+    for _, row in df.iterrows():
+        rule_base.append({
+            "antecedent": [a.strip() for a in row["前件"].split(",")],
+            "consequent": [c.strip() for c in row["後件"].split(",")],
+            "support": float(row["support"]),
+            "confidence": float(row["confidence"]),
+            "lift": float(row["lift"]),
+            "explain": row["explain"]
+        })
+    return rule_base
+
+def score_rule(student_abilities: List[str], rule: Dict[str, Any], w_conf: float = 0.5, w_lift: float = 0.5) -> float:
+    """計算單條規則與學生錯誤能力之相關性分數。"""
+    student_set = set(a.strip() for a in student_abilities)
+    antecedent_set = set(rule["antecedent"])
+
+    # 前件能力重疊比例
+    overlap_ratio = len(student_set & antecedent_set) / (len(antecedent_set) + 1e-9)
+
+    # 綜合信賴度與提升度 (lift 縮放避免主導)
+    quality_score = (
+        w_conf * rule["confidence"] +
+        w_lift * min(rule["lift"] / 2.0, 1.0)
+    )
+    return overlap_ratio * quality_score
+
+def retrieve_rules(student_abilities: List[str], rule_base: List[Dict[str, Any]], top_k: int = 5) -> List[Tuple[float, Dict[str, Any]]]:
+    """根據學生錯誤能力，檢索最相關之 Top-K條規則。"""
+    scored_rules = [
+        (score_rule(student_abilities, rule), rule)
+        for rule in rule_base
+    ]
+    scored_rules = sorted(scored_rules, key=lambda x: x[0], reverse=True)
+    
+    # 僅回傳分數大於 0 的規則
+    return [(score, rule) for score, rule in scored_rules[:top_k] if score > 0]
+
+def build_target_abilities(student_abilities: List[str], retrieved_rules: List[Tuple[float, Dict[str, Any]]]) -> List[str]:
+    """聚合學生已錯能力與規則關聯的能力，生成有序的補強目標清單。"""
+    A = set([a.strip() for a in student_abilities])
+    cand = set()
+    for score, r in retrieved_rules:
+        cand.update(r["antecedent"])
+        cand.update(r["consequent"])
+        
+    target = list(A | cand)
+    # 排序策略：優先將學生已錯的放前面 (x not in A 為 False/0)，其次按字母排序
+    target = sorted(set(target), key=lambda x: (x not in A, x))
+    return target
+
+# --- 2. 題目生成器（Step 6 邏輯） ---
+
+def gen_item(ability: str, q: str, opts: List[str], ans_idx: int, rationale: str):
+    """標準化題目生成輸出結構"""
+    return {
+        "ability": ability,
+        "question": q,
+        "options": opts,
+        "answer": opts[ans_idx],
+        "rationale": rationale
+    }
+
+def gen_word_usage():
+    q = "依語境，填入最恰當的詞語：『面對挑戰，他依然（）不亂。』"
+    opts = ["驚慌", "鎮定", "動搖", "失措"]
+    return gen_item("字詞_應用", q, opts, 1, "培養語境下的詞語選擇能力")
+
+def gen_sentence_reading():
+    q = "判斷語氣：『你這次可真是“厲害”呢。』此處“厲害”最可能表達？"
+    opts = ["稱讚", "驚訝", "反諷", "憤怒"]
+    return gen_item("句段_閱讀", q, opts, 2, "強化句段理解與語用判斷")
+
+def gen_paragraph_reading():
+    q = "以下哪一句最能作為這段文字的『主旨句』？（主題：回收分類的重要性）"
+    opts = ["回收可以賺錢。", "回收分類能降低資源浪費並保護環境。", "我家附近有回收站。", "塑膠比紙更不環保。"]
+    return gen_item("篇章_閱讀", q, opts, 1, "培養篇章結構與推論能力")
+
+GENERATOR_MAP = {
+    "字詞_應用": gen_word_usage,
+    "句段_閱讀": gen_sentence_reading,
+    "篇章_閱讀": gen_paragraph_reading,
+    "句段_朗讀與閱讀": gen_sentence_reading,
+    "篇章_朗讀與閱讀": gen_paragraph_reading,
+    # 簡化其他能力，以 gen_sentence_reading 作為預設
+}
+
+def generate_items_for_ability(ability: str, n: int = 2) -> List[Dict[str, Any]]:
+    """根據指定能力，生成 n 題補救教學練習"""
+    generator_fn = GENERATOR_MAP.get(ability, gen_sentence_reading)
+    # 為了模擬多題，我們簡單重複調用生成器
+    return [generator_fn() for _ in range(n)]
+
+# --- 3. Markdown 報告生成函式（Step 8 邏輯） ---
+
+def render_markdown_packet(student_abilities: List[str], retrieved_rules: List[Tuple[float, Dict[str, Any]]], topN_df: pd.DataFrame, n_per_ability: int = 2) -> str:
+    """將診斷結果整合並輸出為格式化的 Markdown 文件。"""
+    md = []
+    
+    md.append("# 📝 個人化補救學習包與診斷報告\n")
+    
+    # I. 診斷摘要
+    md.append("## 💡 一、診斷摘要：學生當前弱點分析\n")
+    md.append("* **學生已錯能力標籤 (A)**：\n")
+    md.append("    * " + "、".join(student_abilities) + "\n")
+    
+    # II. 規則分析
+    md.append("\n---\n")
+    md.append("## 🔗 二、關聯規則分析 (RAG 檢索結果)\n")
+    if retrieved_rules:
+        for score, r in retrieved_rules:
+            ante = "、".join(r["antecedent"])
+            cons = "、".join(r["consequent"])
+            md.append(f"* **規則**：若在 {ante} 錯題，則在 {cons} 也會錯的機率偏高。（Score={score:.3f}）\n")
+    else:
+        md.append("* 未檢索到與學生錯誤能力高度相關的規則。\n")
+
+    # III. 補救核心
+    md.append("\n---\n")
+    md.append("## 🎯 三、補救核心：出題焦點能力 (Target Abilities)\n")
+    focus = build_target_abilities(student_abilities, retrieved_rules)
+    md.append("* **焦點能力清單**：\n")
+    md.append("    * " + "、".join(focus) + "\n")
+    
+    # IV. 練習題
+    md.append("\n---\n")
+    md.append("## 📚 四、個人化練習題與答案解析 (N={})\n".format(n_per_ability))
+    for ab in focus:
+        md.append(f"### {ab}\n")
+        items = generate_items_for_ability(ab, n=n_per_ability)
+        for idx, it in enumerate(items, 1):
+            opts = " / ".join(it["options"])
+            md.append(f"**Q{idx}.** {it['question']}\n")
+            md.append(f"* 選項：{opts}\n* **參考答案**：{it['answer']}\n* 出題意圖：{it['rationale']}\n")
+        md.append("\n")
+
+    # V. 教學建議
+    md.append("\n---\n")
+    md.append("## 🧑‍🏫 五、教學與輔導建議 (基於規則關聯)\n")
+    md.append("- **基礎先行**：根據規則 (字詞_應用 → 句段_閱讀) 顯示，請於段落閱讀前先補強詞語搭配與語境辨析。\n")
+    md.append("- **過渡與銜接**：先以「句段_閱讀」帶入連接詞、語氣判斷，再過渡至「篇章_閱讀」進行主旨與結構推論。\n")
+    
+    # VI. 宏觀數據參考
+    md.append("\n---\n")
+    md.append("## 📊 六、宏觀數據參考：能力錯誤率 Top 10\n")
+    # 使用 to_markdown 輸出表格
+    md.append(topN_df.to_markdown(index=False))
+    
+    return "\n".join(md)
+
+
+# =================================================================
+# 主執行流程
+# =================================================================
+
+print("\n--- [專題初始化開始] ---\n")
+
+# --- A. 模擬資料上傳與讀取 (Step 2, 3) ---
+
+# 1. 模擬 ability_error_rate.csv 內容
+ability_df_mock = pd.DataFrame({
+    "能力指標_單題": ['句段_閱讀', '篇章_閱讀', '字詞_應用', '篇章_結構', '字詞_認識'],
+    "錯誤率": [0.65, 0.58, 0.61, 0.45, 0.50]
+})
+
+# 2. 模擬 frequent_wrong_sets.csv 內容 (僅用於模擬流程，不直接影響最終報告)
+freq_df_mock = pd.DataFrame({
+    "項目": ['句段_閱讀,篇章_閱讀', '字詞_應用,句段_閱讀'],
+    "support": [0.15, 0.12]
+})
+
+# 3. 模擬 assoc_rules.csv 內容 (最重要的規則數據)
+rules_df_mock = pd.DataFrame({
+    "前件": ['句段_閱讀', '字詞_應用', '篇章_結構', '字詞_認識'],
+    "後件": ['篇章_閱讀', '句段_閱讀', '篇章_閱讀', '字詞_應用'],
+    "support": [0.15, 0.12, 0.10, 0.06],
+    "confidence": [0.85, 0.72, 0.68, 0.60],
+    "lift": [1.46, 1.25, 1.20, 1.15]
+})
+
+# 執行 Step 3-3, 3-4, 3-5 的正規化 (僅對規則數據做關鍵正規化)
+rules_df_mock["前件"] = rules_df_mock["前件"].apply(normalize_ability_name)
+rules_df_mock["後件"] = rules_df_mock["後件"].apply(normalize_ability_name)
+
+
+# --- B. 建立知識規則庫 (Step 4) ---
+
+# 篩選門檻設定
+rule_thresholds = {
+    "min_support": 0.05,
+    "min_confidence": 0.60,
+    "min_lift": 1.10
+}
+
+# 篩選高品質關聯規則 (Step 4-3)
+filtered_rules_df = rules_df_mock[
+    (rules_df_mock["support"] >= rule_thresholds["min_support"]) &
+    (rules_df_mock["confidence"] >= rule_thresholds["min_confidence"]) &
+    (rules_df_mock["lift"] >= rule_thresholds["min_lift"])
+].copy()
+
+# 建立規則文字解釋 (Step 4-4)
+def build_rule_explanation_custom(row):
+    return (
+        f"若學生在 {row['前件']} 出現錯誤，"
+        f"則在 {row['後件']} 也會出錯的機率偏高"
+        f"（confidence={row['confidence']:.2f}, "
+        f"lift={row['lift']:.2f}）。"
+    )
+filtered_rules_df["explain"] = filtered_rules_df.apply(build_rule_explanation_custom, axis=1)
+
+# 建構知識規則庫 (Step 4-5)
+rule_base = build_rule_base(filtered_rules_df)
+
+# 模擬檔案下載
+with open("rule_base.json", "w", encoding="utf-8") as f:
+   json.dump(rule_base, f, ensure_ascii=False, indent=2)
+files.download("rule_base.json")
+print(f"總共建立 {len(rule_base)} 條高品質規則。")
+
+
+# --- C. Hybrid RAG 規則檢索 (Step 5) ---
+
+# 測試案例：學生錯誤的能力標籤
+student_errors = ["句段_閱讀", "篇章_閱讀", "字詞_應用"]
+
+# 檢索最相關規則 (top_k=7)
+top_rules = retrieve_rules(
+    student_abilities=student_errors,
+    rule_base=rule_base,
+    top_k=7
+)
+print(f"\n檢索到 {len(top_rules)} 條與學生錯誤最相關的規則。")
+
+
+# --- D. 報告生成前置數據 (Step 9 邏輯) ---
+
+# 模擬 Top N 錯誤率 DataFrame
+data_topN = {
+    '能力標籤': ['詞彙_辨析', '句子_結構', '修辭_應用', '文本_主旨', '句段_閱讀', '字詞_應用', '篇章_閱讀', '語法_判斷', '文學_常識', '邏輯_推論'],
+    '錯誤率': [0.85, 0.79, 0.72, 0.68, 0.65, 0.61, 0.58, 0.55, 0.50, 0.48]
+}
+top_ability_errors = pd.DataFrame(data_topN)
+topN = top_ability_errors.head(10).rename(columns={'錯誤率': '錯誤率'})
+
+
+# --- E. 輸出 Markdown 報告 (Step 7/8 整合) ---
+
+packet = render_markdown_packet(
+    student_errors, 
+    top_rules, 
+    topN, 
+    n_per_ability=2
+)
+
+# 輸出結果
+print("\n--- [generated_packet.md 內容模擬開始] ---")
+print(packet)
+print("--- [generated_packet.md 內容模擬結束] ---")
+
+# 模擬檔案下載
+with open("generated_packet.md","w",encoding="utf-8") as f:
+    f.write(packet)
+files.download("generated_packet.md")

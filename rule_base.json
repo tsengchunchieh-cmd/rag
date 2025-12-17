@@ -1,0 +1,50 @@
+[
+  {
+    "antecedent": [
+      "Sentence_Reading"
+    ],
+    "consequent": [
+      "Paragraph_Reading"
+    ],
+    "support": 0.15,
+    "confidence": 0.85,
+    "lift": 1.46,
+    "explain": "If a student makes an error in Sentence_Reading, there is a high probability of making an error in Paragraph_Reading as well (confidence=0.85, lift=1.46)."
+  },
+  {
+    "antecedent": [
+      "Word_Usage"
+    ],
+    "consequent": [
+      "Sentence_Reading"
+    ],
+    "support": 0.12,
+    "confidence": 0.72,
+    "lift": 1.25,
+    "explain": "If a student makes an error in Word_Usage, there is a high probability of making an error in Sentence_Reading as well (confidence=0.72, lift=1.25)."
+  },
+  {
+    "antecedent": [
+      "Paragraph_Structure"
+    ],
+    "consequent": [
+      "Paragraph_Reading"
+    ],
+    "support": 0.1,
+    "confidence": 0.68,
+    "lift": 1.2,
+    "explain": "If a student makes an error in Paragraph_Structure, there is a high probability of making an error in Paragraph_Reading as well (confidence=0.68, lift=1.20)."
+  },
+  {
+    "antecedent": [
+      "Word_Recognition"
+    ],
+    "consequent": [
+      "Word_Usage"
+    ],
+    "support": 0.06,
+    "confidence": 0.6,
+    "lift": 1.15,
+    "explain": "If a student makes an error in Word_Recognition, there is a high probability of making an error in Word_Usage as well (confidence=0.60, lift=1.15)."
+  }
+]

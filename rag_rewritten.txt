@@ -1,0 +1,3 @@
+Here is the content of the rag file:
+
+This is a test.
